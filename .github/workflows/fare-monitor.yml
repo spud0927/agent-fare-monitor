@@ -1,0 +1,37 @@
+name: Fare Monitor
+
+on:
+  schedule:
+    - cron: '0 14 * * 2,3'
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - uses: dawidd6/action-download-artifact@v3
+        with:
+          name: fare-history
+          path: fare_monitor/
+        continue-on-error: true
+
+      - name: Run monitor
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m fare_monitor.monitor
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fare-history
+          path: fare_monitor/fare_history.db
+          overwrite: true

@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+fare_monitor/fare_history.db
+fare_monitor/reports/
+.venv/
+fare_monitor/cache/
