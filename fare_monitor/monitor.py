@@ -623,7 +623,7 @@ As historical data accumulates, weight it more heavily than these static ranges.
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def run_tier(tier: SaleTier, conn: sqlite3.Connection):
+def run_tier(tier: SaleTier, conn: sqlite3.Connection, eval_only: bool = False):
     """Run the full pipeline for a single tier."""
     config = TIER_CONFIG[tier]
     print(f"\n{'='*60}")
@@ -637,12 +637,18 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection):
     print(f"  📊 Budget: {used}/{MONTHLY_SEARCH_BUDGET} used this month, "
           f"{remaining} remaining, {expected} needed for this run")
 
-    if expected > remaining:
+    if not eval_only and expected > remaining:
         print(f"  ⚠️  Only {remaining} searches left — skipping this run.")
         return
 
-    # Fetch
-    print("\n📡 Fetching fares...")
+    # Fetch (or load from cache)
+    if eval_only:
+        print("\n📂 Loading from cache...")
+        global USE_CACHE
+        USE_CACHE = True
+    else:
+        print("\n📡 Fetching fares...")
+
     results = fetch_all_fares(tier)
 
     if not results:
@@ -655,8 +661,9 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection):
     # History
     history = get_historical_summary(conn)
 
-    # Save
-    save_fares(conn, results)
+    # Save (skip in eval-only to avoid duplicates)
+    if not eval_only:
+        save_fares(conn, results)
 
     # Evaluate
     print("🧠 Evaluating with Gemini Flash...\n")
@@ -672,19 +679,23 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection):
 
 
 def main():
+    import sys
+    eval_only = "--eval-only" in sys.argv
+
     print(f"🛫 SFO ↔ SAN Fare Monitor — {datetime.now().isoformat()}")
+    if eval_only:
+        print("  ℹ️  Eval-only mode — skipping SERPAPI, using cached data.")
 
     conn = init_db()
     today_weekday = date.today().weekday()
     tier = get_sale_tier(today_weekday)
 
     if tier:
-        run_tier(tier, conn)
+        run_tier(tier, conn, eval_only=eval_only)
     else:
-        # Manual run (not Tue/Wed) — scan both tiers
         print("  ℹ️  Manual run — scanning both tiers.")
         for t in SaleTier:
-            run_tier(t, conn)
+            run_tier(t, conn, eval_only=eval_only)
 
     conn.close()
 
