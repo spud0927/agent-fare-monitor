@@ -22,6 +22,9 @@ Repo structure:
 import os
 import json
 import sqlite3
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
 from enum import Enum
@@ -41,6 +44,12 @@ BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "fare_history.db"
 REPORT_DIR = BASE_DIR / "reports"
 REPORT_DIR.mkdir(exist_ok=True)
+CACHE_DIR = BASE_DIR / "cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+# Set to True during development to reuse cached SERPAPI responses.
+# Set to False (or use env var) for real runs.
+USE_CACHE = os.environ.get("FARE_USE_CACHE", "false").lower() == "true"
 
 # ── Budget ────────────────────────────────────────────────────────────────────
 # 5 departure days/week × 7 weeks advance + 5 × 1 week last-minute
@@ -120,20 +129,29 @@ def generate_search_dates(tier: SaleTier) -> list[tuple[str, str]]:
 
 def fetch_fares(depart_date: str, return_date: str) -> dict:
     """Fetch roundtrip fares from SERPAPI Google Flights for one date pair."""
-    from serpapi import GoogleSearch
+    cache_file = CACHE_DIR / f"{ORIGIN}_{DESTINATION}_{depart_date}_{return_date}.json"
 
-    params = {
-        "engine": "google_flights",
-        "departure_id": ORIGIN,
-        "arrival_id": DESTINATION,
-        "outbound_date": depart_date,
-        "return_date": return_date,
-        "currency": "USD",
-        "hl": "en",
-        "type": "1",  # roundtrip
-        "api_key": os.environ["SERPAPI_KEY"],
-    }
-    results = GoogleSearch(params).get_dict()
+    # Return cached result if available and caching is enabled
+    if USE_CACHE and cache_file.exists():
+        results = json.loads(cache_file.read_text())
+    else:
+        from serpapi import GoogleSearch
+
+        params = {
+            "engine": "google_flights",
+            "departure_id": ORIGIN,
+            "arrival_id": DESTINATION,
+            "outbound_date": depart_date,
+            "return_date": return_date,
+            "currency": "USD",
+            "hl": "en",
+            "type": "1",
+            "api_key": os.environ["SERPAPI_KEY"],
+        }
+        results = GoogleSearch(params).get_dict()
+
+        # Always write to cache so future debug runs can reuse
+        cache_file.write_text(json.dumps(results, indent=2))
 
     best = results.get("best_flights", [])
     other = results.get("other_flights", [])
@@ -475,29 +493,97 @@ def format_report(evaluation: dict, tier: SaleTier) -> str:
 
 
 def send_report(report: str, evaluation: dict):
-    print(report)
-
+    """Send the report via email and save locally."""
+    # Save markdown locally
     report_path = (
         REPORT_DIR / f"report_{date.today().isoformat()}_{evaluation['tier']}.md"
     )
     report_path.write_text(report)
-    print(f"\n📄 Saved to {report_path}")
+    print(f"📄 Saved to {report_path}")
 
-    # ── Uncomment your preferred delivery channel ──
+    # Build HTML email
+    tier_label = evaluation.get("tier", "unknown")
+    summary = evaluation.get("summary", "")
+    landscape = evaluation.get("price_landscape", {})
+    deals = evaluation.get("top_deals", [])
 
-    # Option A: Email via Resend (pip install resend)
-    # import resend
-    # resend.api_key = os.environ["RESEND_API_KEY"]
-    # resend.Emails.send({
-    #     "from": "fares@yourdomain.com",
-    #     "to": "you@email.com",
-    #     "subject": f"✈️ SFO↔SAN {evaluation['tier']} — {evaluation['summary'][:60]}",
-    #     "html": report.replace("\n", "<br>"),
-    # })
+    deals_html = ""
+    if deals:
+        rows = ""
+        for d in deals:
+            rows += f"""<tr>
+                <td>{d.get('depart_day','')[:3]} {d.get('depart_date','')} → {d.get('return_day','')[:3]} {d.get('return_date','')}</td>
+                <td><strong>${d.get('price','?')}</strong></td>
+                <td>{d.get('airline','')}</td>
+                <td>{d.get('outbound_departure','?')} → {d.get('outbound_arrival','?')}</td>
+                <td>{d.get('return_departure','?')} → {d.get('return_arrival','?')}</td>
+                <td>{d.get('stops', 0)}</td>
+                <td>{d.get('why_good','')}</td>
+            </tr>"""
+        deals_html = f"""
+        <h2>Top Deals</h2>
+        <table>
+            <tr><th>Dates</th><th>Price</th><th>Airline</th><th>Outbound</th><th>Return</th><th>Stops</th><th>Why</th></tr>
+            {rows}
+        </table>"""
 
-    # Option B: Slack webhook
-    # import requests
-    # requests.post(os.environ["SLACK_WEBHOOK_URL"], json={"text": report})
+    html_body = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: sans-serif; color: #333; }}
+            table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+            th, td {{ border: 1px solid #ddd; text-align: left; padding: 8px; }}
+            th {{ background-color: #f2f2f2; }}
+            tr:nth-child(even) {{ background-color: #f9f9f9; }}
+            .landscape {{ background: #f0f7ff; padding: 12px; border-radius: 6px; margin: 12px 0; }}
+        </style>
+    </head>
+    <body>
+        <h1>✈️ SFO ↔ SAN — {TIER_CONFIG[SaleTier(tier_label)]['label']}</h1>
+        <p><em>{date.today().strftime('%A, %B %d, %Y')}</em></p>
+        <h2>Summary</h2>
+        <p>{summary}</p>
+        <div class="landscape">
+            <strong>Today's range:</strong> ${landscape.get('lowest_today','?')} – ${landscape.get('highest_today','?')}
+            (median ${landscape.get('median_today','?')})<br>
+            {landscape.get('vs_historical','')}
+        </div>
+        {deals_html}
+        <h2>Recommendation</h2>
+        <p>{evaluation.get('recommendation','')}</p>
+        {f"<h2>Date Patterns</h2><p>{evaluation.get('date_insights','')}</p>" if evaluation.get('date_insights') else ""}
+    </body>
+    </html>
+    """
+
+    # Send email
+    sender_email = os.environ.get("EMAIL_SENDER")
+    receiver_email = os.environ.get("EMAIL_RECIPIENT")
+    password = os.environ.get("EMAIL_PASSWORD")
+
+    if not all([sender_email, receiver_email, password]):
+        print("⚠️  Email credentials not set. Skipping email send.")
+        print(report)
+        return
+
+    notify_flag = "🔔" if evaluation.get("should_notify") else "😴"
+    subject = f"{notify_flag} SFO↔SAN {TIER_CONFIG[SaleTier(tier_label)]['label']} — {summary[:60]}"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, password)
+            server.send_message(msg)
+        print("📧 Email report sent!")
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
+        print(report)
 
 
 # ── Price guidance ────────────────────────────────────────────────────────────
