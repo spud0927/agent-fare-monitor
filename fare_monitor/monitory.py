@@ -23,6 +23,7 @@ import os
 import json
 import sqlite3
 import smtplib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, date, timezone
@@ -427,20 +428,32 @@ def evaluate_with_llm(
 
 Evaluate these options against the {tier.value} baseline."""
 
-    # ── Gemini API call ──
+    # ── Gemini API call (with retry for free tier flakiness) ──
     from google import genai
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_msg,
-        config={
-            "system_instruction": system,
-            "temperature": 0.2,
-        },
-    )
-
-    raw = response.text.strip()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_msg,
+                config={
+                    "system_instruction": system,
+                    "temperature": 0.2,
+                },
+            )
+            raw = response.text.strip()
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 30 * (attempt + 1)
+                print(f"  ⚠️  Gemini error (attempt {attempt + 1}): {e}")
+                print(f"      Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"  ❌ Gemini failed after {max_retries} attempts: {e}")
+                raise
 
     # Clean potential markdown fences
     if raw.startswith("```"):
