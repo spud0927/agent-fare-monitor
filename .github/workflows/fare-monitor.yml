@@ -2,8 +2,8 @@ name: Fare Monitor
 
 on:
   schedule:
-    - cron: '0 14 * * 2,3'
-  workflow_dispatch:
+    - cron: '0 14 * * 2,3'  # 7am PT (Tue & Wed)
+  workflow_dispatch:          # manual trigger
 
 jobs:
   scan:
@@ -18,10 +18,18 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
+      # Restore history DB from prior runs
       - uses: dawidd6/action-download-artifact@v3
         with:
           name: fare-history
           path: fare_monitor/
+        continue-on-error: true
+
+      # Restore cache from prior runs
+      - uses: dawidd6/action-download-artifact@v3
+        with:
+          name: fare-cache
+          path: fare_monitor/cache/
         continue-on-error: true
 
       - name: Run monitor
@@ -33,8 +41,18 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python -m fare_monitor.monitor
 
+      # Persist history DB — runs even if monitor fails
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: fare-history
           path: fare_monitor/fare_history.db
+          overwrite: true
+
+      # Persist cache — runs even if monitor fails
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fare-cache
+          path: fare_monitor/cache/
           overwrite: true
