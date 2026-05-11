@@ -73,11 +73,13 @@ def get_sale_tier(run_day: int | None = None) -> SaleTier | None:
     """Determine which sale tier to scan based on the day of the week."""
     if run_day is None:
         run_day = date.today().weekday()
-    if run_day == 1:    # Tuesday
-        return SaleTier.ADVANCE
-    elif run_day == 2:  # Wednesday
+
+    # 2 is Wednesday. If it's Wednesday, do Last-Minute.
+    if run_day == 2:
         return SaleTier.LAST_MINUTE
-    return None
+    
+    # For all other days (Mon, Tue, Thu, Fri, Sat, Sun), do Advance.
+    return SaleTier.ADVANCE
 
 
 TIER_CONFIG = {
