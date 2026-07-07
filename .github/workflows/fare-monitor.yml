@@ -8,6 +8,8 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -56,3 +58,14 @@ jobs:
           name: fare-cache
           path: fare_monitor/cache/
           overwrite: true
+
+      # Commit a timestamp so GitHub doesn't disable the scheduled workflow
+      - name: Record run timestamp
+        if: always()
+        run: |
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > last_run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_run.txt
+          git diff --staged --quiet || git commit -m "chore: fare monitor run $(date -u +%Y-%m-%d)"
+          git push
