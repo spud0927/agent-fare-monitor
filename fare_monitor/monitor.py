@@ -151,6 +151,12 @@ def fetch_fares(depart_date: str, return_date: str) -> dict:
         }
         results = GoogleSearch(params).get_dict()
 
+        # get_dict() never raises on a non-2xx response — a rejected/out-of-quota
+        # request comes back as a 200 with an "error" body, which would otherwise
+        # look identical to a legitimate "no flights found" result.
+        if "error" in results:
+            raise RuntimeError(f"SerpApi error: {results['error']}")
+
         # Always write to cache so future debug runs can reuse
         cache_file.write_text(json.dumps(results, indent=2))
 
@@ -183,6 +189,11 @@ def fetch_all_fares(tier: SaleTier) -> list[dict]:
             print(f"    ✓ {depart} → {ret}: {result['flight_count']} options")
         except Exception as e:
             print(f"    ✗ {depart} → {ret}: {e}")
+            print(f"  ⛔ Stopping this tier's scan early — a failed search usually "
+                  f"means the SerpApi account is rate-limited or out of quota, and "
+                  f"the remaining {len(date_pairs) - len(all_results) - 1} calls "
+                  f"would just burn budget for nothing.")
+            break
 
     return all_results
 
@@ -286,6 +297,44 @@ def get_monthly_usage(conn: sqlite3.Connection) -> int:
         WHERE scanned_at >= ?
     """, (first_of_month,)).fetchone()
     return row[0] if row[0] else 0
+
+
+def already_scanned_today(conn: sqlite3.Connection, tier: SaleTier) -> bool:
+    """Check whether this tier has already been scanned today.
+
+    Guards against a manual workflow_dispatch (or an accidental double
+    schedule) re-running a full tier scan on top of one that already ran —
+    the SerpApi budget doesn't reset just because someone re-triggered it.
+    """
+    today = date.today().isoformat()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM fare_history WHERE tier = ? AND date(scanned_at) = ?",
+        (tier.value, today),
+    ).fetchone()
+    return row[0] > 0
+
+
+def get_serpapi_remaining() -> int | None:
+    """Ask SerpApi directly how many searches are left on the account.
+
+    The local DB count in get_monthly_usage() only sees what this script has
+    used and only counts searches that returned data — it's blind to usage
+    from other scripts sharing this key and to searches SerpApi rejected for
+    being over quota. This is the only source that reflects reality.
+    """
+    from serpapi import GoogleSearch
+
+    try:
+        account = GoogleSearch({"api_key": os.environ["SERPAPI_KEY"]}).get_account()
+    except Exception as e:
+        print(f"  ⚠️  Could not reach SerpApi account API: {e}")
+        return None
+
+    if "error" in account:
+        print(f"  ⚠️  SerpApi account API error: {account['error']}")
+        return None
+
+    return account.get("total_searches_left")
 
 
 # ── LLM evaluation (Gemini Flash) ────────────────────────────────────────────
@@ -630,12 +679,25 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection, eval_only: bool = False):
     print(f"  {config['label']}")
     print(f"{'='*60}\n")
 
+    # Same-day guard — a manual re-trigger or an accidental double schedule
+    # shouldn't burn through another full scan on top of one that already ran.
+    if not eval_only and already_scanned_today(conn, tier):
+        print(f"  ⚠️  {config['label']} was already scanned today — skipping "
+              f"to avoid duplicating today's search budget.")
+        return
+
     # Budget check
     used = get_monthly_usage(conn)
-    remaining = MONTHLY_SEARCH_BUDGET - used
+    local_remaining = MONTHLY_SEARCH_BUDGET - used
     expected = len(generate_search_dates(tier))
-    print(f"  📊 Budget: {used}/{MONTHLY_SEARCH_BUDGET} used this month, "
-          f"{remaining} remaining, {expected} needed for this run")
+
+    real_remaining = get_serpapi_remaining() if not eval_only else None
+    remaining = real_remaining if real_remaining is not None else local_remaining
+
+    print(f"  📊 Budget: {used}/{MONTHLY_SEARCH_BUDGET} tracked locally "
+          f"({local_remaining} remaining by that count); "
+          f"{'unknown' if real_remaining is None else real_remaining} actually "
+          f"remaining per SerpApi; {expected} needed for this run")
 
     if not eval_only and expected > remaining:
         print(f"  ⚠️  Only {remaining} searches left — skipping this run.")

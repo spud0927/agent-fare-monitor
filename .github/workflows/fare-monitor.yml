@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 14 * * 2,3'  # 7am PT (Tue & Wed)
   workflow_dispatch:          # manual trigger
+    inputs:
+      skip_monitor:
+        description: 'Skip the fare search (use for testing workflow/infra changes only)'
+        type: boolean
+        default: false
 
 jobs:
   scan:
@@ -35,6 +40,7 @@ jobs:
         continue-on-error: true
 
       - name: Run monitor
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_monitor != true }}
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
