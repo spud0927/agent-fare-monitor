@@ -2,12 +2,18 @@ name: Fare Monitor
 
 on:
   schedule:
-    # 14:30 UTC Tuesday. swa-checker runs at 14:00 on the same shared SerpApi
+    # 13:30 UTC Tuesday. swa-checker runs at 13:15 on the same shared SerpApi
     # key and gets first claim on quota, because it re-prices already-booked
     # flights (real rebooking credit) while this repo is speculative shopping.
-    # Note GitHub cron is fixed UTC, so this is 7:30am PT in summer and
-    # 6:30am PT in winter.
-    - cron: '30 14 * * 2'
+    # Note GitHub cron is fixed UTC, so this is 6:30am PT in summer and
+    # 5:30am PT in winter.
+    #
+    # Moved from 14:30 on 2026-09-01, in step with swa-checker's 14:15 -> 13:15,
+    # to keep the 15 min ordering gap. Both repos' runs in the 14:00-15:00 UTC
+    # hour were dropped outright by GitHub that day; separately, queue delay off
+    # the old cron was routinely 35-127 min, so fares were being sampled late
+    # morning ET after SWA's East Coast sale posting had begun selling out.
+    - cron: '30 13 * * 2'
   workflow_dispatch:          # manual trigger
     inputs:
       skip_monitor:
