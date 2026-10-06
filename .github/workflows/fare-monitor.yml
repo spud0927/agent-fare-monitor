@@ -30,18 +30,46 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
+      # GitHub's cron now lands 4-5h late, so runs are started on time by
+      # workflow_dispatch and the cron is only a fallback. A scheduled run skips
+      # itself if a run today already got through the monitor (which sends the
+      # email) — checked per step, since the timestamp push can fail after the
+      # email has gone. Manual dispatches always run.
+      - name: Skip if already ran today
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          today=$(date -u +%F)
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" -w "${{ github.workflow }}" -L 20 \
+                        --json databaseId,createdAt,status \
+                        --jq ".[] | select(.status==\"completed\" and (.createdAt|startswith(\"$today\"))) | .databaseId"); do
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+                   --jq '[.jobs[].steps[] | select(.name=="Run monitor" and .conclusion=="success")] | length')
+            if [ "$ok" -gt 0 ]; then
+              echo "Run $id already sent today's email. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: '3.12'
 
       - name: Install deps
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       # Restore history DB from prior runs
       - uses: dawidd6/action-download-artifact@v3
+        if: steps.guard.outputs.skip != 'true'
         with:
           name: fare-history
           path: fare_monitor/
@@ -49,13 +77,14 @@ jobs:
 
       # Restore cache from prior runs
       - uses: dawidd6/action-download-artifact@v3
+        if: steps.guard.outputs.skip != 'true'
         with:
           name: fare-cache
           path: fare_monitor/cache/
         continue-on-error: true
 
       - name: Run monitor
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_monitor != true }}
+        if: ${{ steps.guard.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_monitor != true) }}
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -66,7 +95,7 @@ jobs:
 
       # Persist history DB — runs even if monitor fails
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && steps.guard.outputs.skip != 'true' }}
         with:
           name: fare-history
           path: fare_monitor/fare_history.db
@@ -74,7 +103,7 @@ jobs:
 
       # Persist cache — runs even if monitor fails
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && steps.guard.outputs.skip != 'true' }}
         with:
           name: fare-cache
           path: fare_monitor/cache/
@@ -82,11 +111,11 @@ jobs:
 
       # Commit a timestamp so GitHub doesn't disable the scheduled workflow
       - name: Record run timestamp
-        if: always()
+        if: ${{ always() && steps.guard.outputs.skip != 'true' }}
         run: |
           echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > last_run.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_run.txt
           git diff --staged --quiet || git commit -m "chore: fare monitor run $(date -u +%Y-%m-%d)"
-          git push
+          git pull --rebase -q && git push
