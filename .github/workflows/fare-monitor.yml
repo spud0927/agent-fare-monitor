@@ -24,6 +24,14 @@ on:
         description: 'Sweep even if today is not Tuesday (records post-sale prices — skews the baseline)'
         type: boolean
         default: false
+      eval_only:
+        description: 'Re-evaluate and email cached fares without any live searches'
+        type: boolean
+        default: false
+      restore_run_id:
+        description: 'Restore history and cache from this run ID instead of the latest success (e.g. to replay a run that failed after its sweep). Only replay the most recent sweep — a successful replay becomes the next run's restore point.'
+        type: string
+        default: ''
 
 jobs:
   scan:
@@ -73,6 +81,7 @@ jobs:
         with:
           name: fare-history
           path: fare_monitor/
+          run_id: ${{ inputs.restore_run_id }}
         continue-on-error: true
 
       # Restore cache from prior runs
@@ -81,6 +90,7 @@ jobs:
         with:
           name: fare-cache
           path: fare_monitor/cache/
+          run_id: ${{ inputs.restore_run_id }}
         continue-on-error: true
 
       - name: Run monitor
@@ -91,7 +101,7 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        run: python -m fare_monitor.monitor ${{ inputs.force_scan && '--force' || '' }}
+        run: python -m fare_monitor.monitor ${{ inputs.force_scan && '--force' || '' }} ${{ inputs.eval_only && '--eval-only' || '' }}
 
       # Persist history DB — runs even if monitor fails
       - uses: actions/upload-artifact@v4

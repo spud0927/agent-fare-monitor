@@ -914,6 +914,15 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection, eval_only: bool = False):
         print("\n📂 Loading from cache...")
         global USE_CACHE
         USE_CACHE = True
+        # The window slides a day per day, so a replay on a later date asks for
+        # pairs the cache never saw — and a cache miss falls through to a live
+        # search. Eval-only must never spend searches, so drop those pairs.
+        cached = [p for p in date_pairs
+                  if (CACHE_DIR / f"{ORIGIN}_{DESTINATION}_{p[0]}_{p[1]}.json").exists()]
+        if len(cached) < len(date_pairs):
+            print(f"  ✂️  {len(date_pairs) - len(cached)} date pairs not in cache — "
+                  f"skipped rather than searched live.")
+        date_pairs = cached
     else:
         print("\n📡 Fetching fares...")
 
