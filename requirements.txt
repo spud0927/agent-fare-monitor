@@ -1,2 +1,2 @@
 google-search-results
-google-genai
+google-genai<3  # 3.0 defaults to API v1, which rejects system_instruction (broke the 2026-11-10 run)
