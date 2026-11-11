@@ -29,7 +29,7 @@ on:
         type: boolean
         default: false
       restore_run_id:
-        description: 'Restore history and cache from this run ID instead of the latest success (e.g. to replay a run that failed after its sweep). Only replay the most recent sweep — a successful replay becomes the next run's restore point.'
+        description: 'Restore history and cache from this run ID instead of the latest success (e.g. to replay a run that failed after its sweep). Only replay the most recent sweep — a successful replay becomes the restore point for the next run.'
         type: string
         default: ''
 
