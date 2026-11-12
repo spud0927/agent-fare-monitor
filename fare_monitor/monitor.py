@@ -859,12 +859,25 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection, eval_only: bool = False):
     print(f"  {config['label']}")
     print(f"{'='*60}\n")
 
-    # Same-day guard — a manual re-trigger or an accidental double schedule
-    # shouldn't burn through another full scan on top of one that already ran.
+    # Same-day guard — a re-trigger shouldn't burn through another full scan on
+    # top of one that already ran. It re-evaluates today's cached fares instead
+    # of stopping, because the usual reason for a second run is that the first
+    # swept fine and then failed before emailing (2026-11-10: the backup run
+    # re-swept and drained the shared quota).
     if not eval_only and already_scanned_today(conn, tier):
-        print(f"  ⚠️  {config['label']} was already scanned today — skipping "
-              f"to avoid duplicating today's search budget.")
-        return
+        print(f"  ⚠️  {config['label']} was already scanned today — "
+              f"re-evaluating today's cached fares instead of searching again.")
+        eval_only = True
+        # Cache files are keyed by date pair, not scan date, so a pair today's
+        # (possibly trimmed) sweep skipped can still hold an earlier week's
+        # prices. Only re-evaluate the pairs scanned today.
+        scanned_today = set(conn.execute(
+            "SELECT DISTINCT depart_date, return_date FROM fare_history "
+            "WHERE tier = ? AND date(scanned_at) = ?",
+            (tier.value, date.today().isoformat()),
+        ).fetchall())
+    else:
+        scanned_today = None
 
     # Budget check
     account = get_serpapi_account() if not eval_only else None
@@ -918,9 +931,11 @@ def run_tier(tier: SaleTier, conn: sqlite3.Connection, eval_only: bool = False):
         # pairs the cache never saw — and a cache miss falls through to a live
         # search. Eval-only must never spend searches, so drop those pairs.
         cached = [p for p in date_pairs
-                  if (CACHE_DIR / f"{ORIGIN}_{DESTINATION}_{p[0]}_{p[1]}.json").exists()]
+                  if (CACHE_DIR / f"{ORIGIN}_{DESTINATION}_{p[0]}_{p[1]}.json").exists()
+                  and (scanned_today is None or p in scanned_today)]
         if len(cached) < len(date_pairs):
-            print(f"  ✂️  {len(date_pairs) - len(cached)} date pairs not in cache — "
+            print(f"  ✂️  {len(date_pairs) - len(cached)} date pairs not in cache"
+                  f"{'' if scanned_today is None else ' or not scanned today'} — "
                   f"skipped rather than searched live.")
         date_pairs = cached
     else:

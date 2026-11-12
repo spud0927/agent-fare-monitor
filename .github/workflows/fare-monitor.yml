@@ -75,13 +75,17 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
-      # Restore history DB from prior runs
+      # Restore history DB from prior runs. Any completed run counts, not just
+      # successes: a run that swept and then failed still saved today's fares,
+      # and the monitor needs to see them to avoid re-sweeping.
       - uses: dawidd6/action-download-artifact@v3
         if: steps.guard.outputs.skip != 'true'
         with:
           name: fare-history
           path: fare_monitor/
           run_id: ${{ inputs.restore_run_id }}
+          workflow_conclusion: completed
+          search_artifacts: true
         continue-on-error: true
 
       # Restore cache from prior runs
@@ -91,6 +95,8 @@ jobs:
           name: fare-cache
           path: fare_monitor/cache/
           run_id: ${{ inputs.restore_run_id }}
+          workflow_conclusion: completed
+          search_artifacts: true
         continue-on-error: true
 
       - name: Run monitor
